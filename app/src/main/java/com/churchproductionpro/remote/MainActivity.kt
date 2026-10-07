@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import org.json.JSONArray
@@ -21,8 +22,14 @@ class MainActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val ui = Handler(Looper.getMainLooper())
 
+    private lateinit var root: LinearLayout
+    private lateinit var connectionPanel: LinearLayout
+    private lateinit var settingsPanel: LinearLayout
+    private lateinit var remotePanel: LinearLayout
     private lateinit var ipBox: EditText
     private lateinit var pinBox: EditText
+    private lateinit var settingsIpBox: EditText
+    private lateinit var settingsPinBox: EditText
     private lateinit var status: TextView
     private lateinit var title: TextView
     private lateinit var current: TextView
@@ -45,15 +52,29 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
-        ipBox.setText(prefs.getString("ip","") ?: "")
-        pinBox.setText(prefs.getString("pin","") ?: "")
+
+        val savedIp=prefs.getString("ip","") ?: ""
+        val savedPin=prefs.getString("pin","") ?: ""
+        ipBox.setText(savedIp)
+        pinBox.setText(savedPin)
+        settingsIpBox.setText(savedIp)
+        settingsPinBox.setText(savedPin)
+
         loadMirror()
         ui.post(poller)
+
+        if(savedIp.isNotBlank() && savedPin.isNotBlank()) {
+            showRemote()
+            status.text="Connecting to saved Master..."
+            connectTo(savedIp,savedPin,true)
+        } else {
+            showFirstConnect()
+        }
     }
 
     private fun buildUi() {
         val scroll=ScrollView(this)
-        val root=LinearLayout(this).apply {
+        root=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setPadding(dp(12),dp(12),dp(12),dp(20))
             setBackgroundColor(Color.rgb(9,13,18))
@@ -74,83 +95,178 @@ class MainActivity : Activity() {
             setOnClickListener { action() }
         }
 
-        root.addView(label("Church Production Pro Remote",22f,true))
+        val header=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+        }
+        header.addView(label("Church Production Pro Remote",22f,true),LinearLayout.LayoutParams(0,-2,1f))
+        header.addView(button("SETTINGS"){ openSettings() })
+        root.addView(header,ViewGroup.LayoutParams(-1,-2))
 
+        connectionPanel=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(0,dp(6),0,dp(6))
+        }
+        connectionPanel.addView(label("CONNECT TO MASTER",13f,true))
         ipBox=EditText(this).apply {
             hint="Master PC IP (example 192.168.1.249)"
             setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
             inputType=InputType.TYPE_CLASS_TEXT
         }
-        root.addView(ipBox, ViewGroup.LayoutParams(-1,-2))
-
+        connectionPanel.addView(ipBox, ViewGroup.LayoutParams(-1,-2))
         pinBox=EditText(this).apply {
             hint="4-digit PIN"
             setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
             inputType=InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
         }
-        root.addView(pinBox, ViewGroup.LayoutParams(-1,-2))
-        root.addView(button("CONNECT TO MASTER"){ connect() }, ViewGroup.LayoutParams(-1,-2))
+        connectionPanel.addView(pinBox, ViewGroup.LayoutParams(-1,-2))
+        connectionPanel.addView(button("CONNECT TO MASTER"){
+            connectTo(ipBox.text.toString().trim(),pinBox.text.toString().trim(),false)
+        }, ViewGroup.LayoutParams(-1,-2))
+        root.addView(connectionPanel,ViewGroup.LayoutParams(-1,-2))
+
+        settingsPanel=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            visibility=View.GONE
+            setPadding(0,dp(6),0,dp(6))
+        }
+        settingsPanel.addView(label("REMOTE SETTINGS",18f,true))
+        settingsIpBox=EditText(this).apply {
+            hint="Master PC IP"
+            setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            inputType=InputType.TYPE_CLASS_TEXT
+        }
+        settingsPanel.addView(settingsIpBox,ViewGroup.LayoutParams(-1,-2))
+        settingsPinBox=EditText(this).apply {
+            hint="4-digit PIN"
+            setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            inputType=InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        }
+        settingsPanel.addView(settingsPinBox,ViewGroup.LayoutParams(-1,-2))
+        settingsPanel.addView(button("SAVE & CONNECT"){
+            connectTo(settingsIpBox.text.toString().trim(),settingsPinBox.text.toString().trim(),false)
+        },ViewGroup.LayoutParams(-1,-2))
+        settingsPanel.addView(button("DISCONNECT / CHANGE MASTER"){ disconnectChangeMaster() },ViewGroup.LayoutParams(-1,-2))
+        settingsPanel.addView(button("BACK TO REMOTE"){ closeSettings() },ViewGroup.LayoutParams(-1,-2))
+        root.addView(settingsPanel,ViewGroup.LayoutParams(-1,-2))
 
         status=label("Not connected",13f).apply { setTextColor(Color.LTGRAY) }
         root.addView(status)
+
+        remotePanel=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
 
         val transport=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
         transport.addView(button("PLAY / PAUSE"){ send("play") }, LinearLayout.LayoutParams(0,-2,1f))
         transport.addView(button("STOP"){ send("stop") }, LinearLayout.LayoutParams(0,-2,1f))
         transport.addView(button("BLACKOUT"){ send("black") }, LinearLayout.LayoutParams(0,-2,1f))
-        root.addView(transport, ViewGroup.LayoutParams(-1,-2))
+        remotePanel.addView(transport, ViewGroup.LayoutParams(-1,-2))
 
         title=label("No item selected",23f,true)
-        root.addView(title)
+        remotePanel.addView(title)
 
         current=label("",27f,true).apply {
             gravity=Gravity.CENTER
             minHeight=dp(80)
         }
-        root.addView(current, ViewGroup.LayoutParams(-1,-2))
+        remotePanel.addView(current, ViewGroup.LayoutParams(-1,-2))
 
         next=label("",18f).apply {
             gravity=Gravity.CENTER
             setTextColor(Color.LTGRAY)
             minHeight=dp(55)
         }
-        root.addView(next, ViewGroup.LayoutParams(-1,-2))
+        remotePanel.addView(next, ViewGroup.LayoutParams(-1,-2))
 
-        root.addView(label("SONG SECTIONS",12f,true))
+        remotePanel.addView(label("SONG SECTIONS",12f,true))
         val secScroll=HorizontalScrollView(this)
         sections=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
         secScroll.addView(sections)
-        root.addView(secScroll, ViewGroup.LayoutParams(-1,-2))
+        remotePanel.addView(secScroll, ViewGroup.LayoutParams(-1,-2))
 
-        root.addView(label("SERVICE",12f,true))
+        remotePanel.addView(label("SERVICE",12f,true))
         service=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
-        root.addView(service, ViewGroup.LayoutParams(-1,-2))
+        remotePanel.addView(service, ViewGroup.LayoutParams(-1,-2))
+
+        root.addView(remotePanel,ViewGroup.LayoutParams(-1,-2))
     }
 
-    private fun connect() {
-        val ip=ipBox.text.toString().trim()
-        val p=pinBox.text.toString().trim()
+    private fun showRemote() {
+        connectionPanel.visibility=View.GONE
+        settingsPanel.visibility=View.GONE
+        remotePanel.visibility=View.VISIBLE
+    }
+
+    private fun showFirstConnect() {
+        settingsPanel.visibility=View.GONE
+        connectionPanel.visibility=View.VISIBLE
+        remotePanel.visibility=View.VISIBLE
+        status.text="Not connected"
+    }
+
+    private fun openSettings() {
+        val ip=if(master.isNotBlank()) master else prefs.getString("ip","") ?: ""
+        val p=if(pin.isNotBlank()) pin else prefs.getString("pin","") ?: ""
+        settingsIpBox.setText(ip)
+        settingsPinBox.setText(p)
+        connectionPanel.visibility=View.GONE
+        remotePanel.visibility=View.GONE
+        settingsPanel.visibility=View.VISIBLE
+    }
+
+    private fun closeSettings() {
+        val savedIp=prefs.getString("ip","") ?: ""
+        val savedPin=prefs.getString("pin","") ?: ""
+        if(connected || (savedIp.isNotBlank() && savedPin.isNotBlank())) showRemote() else showFirstConnect()
+    }
+
+    private fun disconnectChangeMaster() {
+        connected=false
+        val oldIp=if(master.isNotBlank()) master else settingsIpBox.text.toString().trim()
+        master=""
+        pin=""
+        mirrorSig=""
+        prefs.edit().remove("ip").remove("pin").apply()
+        ipBox.setText(oldIp)
+        pinBox.setText("")
+        settingsIpBox.setText(oldIp)
+        settingsPinBox.setText("")
+        showFirstConnect()
+        status.text="Disconnected — enter Master IP and PIN"
+    }
+
+    private fun connectTo(ip:String,p:String,automatic:Boolean) {
         if(ip.isBlank() || p.isBlank()) {
             Toast.makeText(this,"Enter Master IP and PIN",Toast.LENGTH_SHORT).show()
             return
         }
-        status.text="Connecting..."
+
+        status.text=if(automatic) "Connecting to saved Master..." else "Connecting..."
+
         worker.execute {
             try {
-                val full=getJson("http://$ip:45821/net/state?pin=${enc(p)}")
+                val full=getJson("http://"+ip+":45821/net/state?pin="+enc(p))
+                val live=getJson("http://"+ip+":45821/net/live?pin="+enc(p))
                 master=ip
                 pin=p
+                mirrorSig=live.optString("mirror","")
                 prefs.edit().putString("ip",ip).putString("pin",p).apply()
                 saveMirror(full)
                 connected=true
                 ui.post {
-                    status.text="Connected to $ip"
+                    ipBox.setText(ip)
+                    pinBox.setText(p)
+                    settingsIpBox.setText(ip)
+                    settingsPinBox.setText(p)
+                    showRemote()
+                    status.text="Connected to "+ip
                     renderFull(full)
+                    renderLive(live)
                 }
             } catch(e:Exception) {
                 connected=false
                 ui.post {
-                    status.text="Connection failed"
+                    status.text="Could not connect to saved Master"
+                    if(!automatic) showFirstConnect()
                     Toast.makeText(this,"Check IP, PIN, Wi-Fi and Windows Firewall",Toast.LENGTH_LONG).show()
                 }
             }
@@ -168,19 +284,19 @@ class MainActivity : Activity() {
         if(master.isBlank() || pin.isBlank()) return
         worker.execute {
             try {
-                val live=getJson("http://$master:45821/net/live?pin=${enc(pin)}")
+                val live=getJson("http://"+master+":45821/net/live?pin="+enc(pin))
                 val remoteMirror=live.optString("mirror","")
                 if(remoteMirror.isNotBlank() && remoteMirror != mirrorSig) {
-                    val full=getJson("http://$master:45821/net/state?pin=${enc(pin)}")
+                    val full=getJson("http://"+master+":45821/net/state?pin="+enc(pin))
                     mirrorSig=remoteMirror
                     saveMirror(full)
                     ui.post { renderFull(full) }
                 } else {
                     ui.post { renderLive(live) }
                 }
-                ui.post { status.text="Connected to $master" }
+                ui.post { status.text="Connected to "+master }
             } catch(_:Exception) {
-                ui.post { status.text="Master connection lost" }
+                ui.post { status.text="Master connection lost — retrying..." }
             }
         }
     }
@@ -189,7 +305,7 @@ class MainActivity : Activity() {
         title.text=s.optString("title","No item selected")
         current.text=s.optString("lyric","")
         val n=s.optString("nextLyric","")
-        next.text=if(n.isBlank()) "" else "NEXT: $n"
+        next.text=if(n.isBlank()) "" else "NEXT: "+n
         val active=s.optString("activeSection","")
         if(active.isNotBlank()) {
             for(i in 0 until sections.childCount) {
@@ -210,11 +326,11 @@ class MainActivity : Activity() {
             for(i in 0 until items.length()) {
                 val name=items.optString(i,"Untitled")
                 val b=Button(this).apply {
-                    text="${i+1}. $name"
+                    text=(i+1).toString()+". "+name
                     isAllCaps=false
                     setTextColor(Color.WHITE)
                     setBackgroundColor(if(i==selected) Color.rgb(38,99,154) else Color.rgb(22,33,44))
-                    setOnClickListener { send("sel:$i") }
+                    setOnClickListener { send("sel:"+i) }
                 }
                 service.addView(b, LinearLayout.LayoutParams(-1,-2).apply { setMargins(0,dp(2),0,dp(2)) })
             }
@@ -239,7 +355,7 @@ class MainActivity : Activity() {
                 setTextColor(Color.WHITE)
                 setBackgroundColor(sectionColor(name))
                 alpha=if(name==active) 1f else .72f
-                setOnClickListener { send("j$index") }
+                setOnClickListener { send("j"+index) }
             }
             sections.addView(b)
         }
@@ -262,8 +378,8 @@ class MainActivity : Activity() {
         }
         worker.execute {
             try {
-                val code=getCode("http://$master:45821/net/cmd?c=${enc(c)}&pin=${enc(pin)}")
-                if(code != 204) throw Exception("HTTP $code")
+                val code=getCode("http://"+master+":45821/net/cmd?c="+enc(c)+"&pin="+enc(pin))
+                if(code != 204) throw Exception("HTTP "+code)
                 if(c.startsWith("sel:")) ui.postDelayed({ refreshFull() },160)
             } catch(_:Exception) {
                 ui.post { Toast.makeText(this,"Remote command failed",Toast.LENGTH_SHORT).show() }
@@ -275,7 +391,7 @@ class MainActivity : Activity() {
         if(!connected) return
         worker.execute {
             try {
-                val full=getJson("http://$master:45821/net/state?pin=${enc(pin)}")
+                val full=getJson("http://"+master+":45821/net/state?pin="+enc(pin))
                 saveMirror(full)
                 ui.post { renderFull(full) }
             } catch(_:Exception) {}
@@ -299,7 +415,7 @@ class MainActivity : Activity() {
         c.requestMethod="GET"
         c.useCaches=false
         try {
-            if(c.responseCode != 200) throw Exception("HTTP ${c.responseCode}")
+            if(c.responseCode != 200) throw Exception("HTTP "+c.responseCode)
             return JSONObject(c.inputStream.bufferedReader().use { it.readText() })
         } finally { c.disconnect() }
     }
